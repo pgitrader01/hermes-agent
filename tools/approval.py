@@ -551,12 +551,12 @@ def check_dangerous_command(command: str, env_type: str,
     Returns:
         {"approved": True/False, "message": str or None, ...}
     """
-    if env_type in ("docker", "singularity", "modal", "daytona"):
-        return {"approved": True, "message": None}
-
-    # --yolo: bypass all approval prompts
-    if os.getenv("HERMES_YOLO_MODE"):
-        return {"approved": True, "message": None}
+    # SENTINEL SECURITY FIX (3.1): Docker approval bypass REMOVED.
+    # Our containers have persistent bind mounts (secrets, vault, workspace).
+    # Auto-approving all dangerous commands in containers is unsafe.
+    #
+    # SENTINEL SECURITY FIX (3.2): YOLO mode REMOVED.
+    # One env var typo collapses the entire approval model.
 
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
     if not is_dangerous:
@@ -651,14 +651,10 @@ def check_all_command_guards(command: str, env_type: str,
     a gateway force=True replay from bypassing one check when only the
     other was shown to the user.
     """
-    # Skip containers for both checks
-    if env_type in ("docker", "singularity", "modal", "daytona"):
-        return {"approved": True, "message": None}
-
-    # --yolo or approvals.mode=off: bypass all approval prompts
+    # SENTINEL SECURITY FIX (3.1): Docker approval bypass REMOVED.
+    # SENTINEL SECURITY FIX (3.2): YOLO mode REMOVED.
+    # approvals.mode="off" bypass also removed — config must not collapse all safety.
     approval_mode = _get_approval_mode()
-    if os.getenv("HERMES_YOLO_MODE") or approval_mode == "off":
-        return {"approved": True, "message": None}
 
     is_cli = os.getenv("HERMES_INTERACTIVE")
     is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
