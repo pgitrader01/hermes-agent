@@ -22,13 +22,24 @@ This fork applies the following security hardening over the upstream Hermes Agen
 
 **Fix:** Removed the `env_type in ("docker", ...)` early-return bypass in both `check_dangerous_command()` and `check_all_command_guards()`.
 
-### 2. YOLO Mode Removed (`tools/approval.py`)
+### 2. approvals.mode="off" Bypass Removed (`tools/approval.py`)
 
-**Upstream behavior:** Setting `HERMES_YOLO_MODE` environment variable disables ALL approval and security checks globally.
+**Upstream behavior:** Setting `approvals.mode: "off"` in `config.yaml` disables all approval and security checks globally.
 
-**Why this is unsafe:** A single environment variable typo or misconfiguration collapses the entire security model. The `approvals.mode: "off"` config path has also been removed from the combined guard for the same reason.
+**Why this is unsafe:** A config path that disables all safety checks is a single point of failure. Config must never collapse all safety.
 
-**Fix:** Removed the `os.getenv("HERMES_YOLO_MODE")` checks in both `check_dangerous_command()` and `check_all_command_guards()`. Removed the `approval_mode == "off"` bypass in `check_all_command_guards()`.
+**Fix:** Removed the `approval_mode == "off"` bypass in `check_all_command_guards()`.
+
+### 3. YOLO Mode (Retained — Opt-In Only)
+
+**Upstream behavior:** `HERMES_YOLO_MODE` env var or session-scoped `/yolo` bypasses approvals.
+
+**Sentinel decision (2026-04-12):** YOLO mode is **retained** as a deliberate opt-in. The session-scoped `/yolo` (from upstream PR) is the preferred form — it limits blast radius to the active session rather than the entire agent runtime. Process-scoped `HERMES_YOLO_MODE` env var remains available for local CLI use.
+
+**Operational policy:**
+- `HERMES_YOLO_MODE` must never appear in any deployed `.env` file (CI, servers, containers)
+- `/yolo` is a Director-initiated override, not a default mode
+- Heartbeat and cron-driven sessions must never auto-enable `/yolo`
 
 ## Credential Handling
 
