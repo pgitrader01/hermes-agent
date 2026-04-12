@@ -1749,13 +1749,20 @@ class AIAgent:
             aux_base_url = str(getattr(client, "base_url", ""))
             aux_api_key = str(getattr(client, "api_key", ""))
             # SENTINEL PATCH: When the auxiliary compression model is the
-            # same model ID as the primary, honor the primary's
+            # same base model as the primary, honor the primary's
             # config_context_length override. Without this, the aux check
             # falls back to the 128K default for models (like qwen3p6-plus)
             # whose context length is not published via /v1/models metadata.
+            # Compare by basename (last path segment, case-insensitive)
+            # because self.model is normalized by normalize_model_for_provider
+            # while aux_model comes from raw auxiliary config — strict equality
+            # fails even when they refer to the same underlying model.
+            def _model_basename(m):
+                return str(m or "").rsplit("/", 1)[-1].strip().lower()
             _aux_config_ctx = (
                 getattr(self, "_config_context_length", None)
-                if aux_model == getattr(self, "model", None)
+                if _model_basename(aux_model) == _model_basename(getattr(self, "model", None))
+                and _model_basename(aux_model)
                 else None
             )
             aux_context = get_model_context_length(
