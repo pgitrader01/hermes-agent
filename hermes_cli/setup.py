@@ -20,10 +20,7 @@ import copy
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from hermes_cli.nous_subscription import (
-    apply_nous_provider_defaults,
-    get_nous_subscription_features,
-)
+from hermes_cli.nous_subscription import get_nous_subscription_features
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 from hermes_constants import get_optional_skills_dir
 
@@ -99,6 +96,7 @@ _DEFAULT_PROVIDER_MODELS = {
     "zai": ["glm-5.1", "glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
     "kimi-coding": ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
     "kimi-coding-cn": ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
+    "arcee": ["trinity-large-thinking", "trinity-large-preview", "trinity-mini"],
     "minimax": ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"],
     "minimax-cn": ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"],
     "ai-gateway": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5", "google/gemini-3-flash"],
@@ -212,20 +210,20 @@ def prompt(question: str, default: str = None, password: bool = False) -> str:
         sys.exit(1)
 
 
-def _curses_prompt_choice(question: str, choices: list, default: int = 0) -> int:
+def _curses_prompt_choice(question: str, choices: list, default: int = 0, description: str | None = None) -> int:
     """Single-select menu using curses. Delegates to curses_radiolist."""
     from hermes_cli.curses_ui import curses_radiolist
-    return curses_radiolist(question, choices, selected=default, cancel_returns=-1)
+    return curses_radiolist(question, choices, selected=default, cancel_returns=-1, description=description)
 
 
 
-def prompt_choice(question: str, choices: list, default: int = 0) -> int:
+def prompt_choice(question: str, choices: list, default: int = 0, description: str | None = None) -> int:
     """Prompt for a choice from a list with arrow key navigation.
 
     Escape keeps the current default (skips the question).
     Ctrl+C exits the wizard.
     """
-    idx = _curses_prompt_choice(question, choices, default)
+    idx = _curses_prompt_choice(question, choices, default, description=description)
     if idx >= 0:
         if idx == default:
             print_info("  Skipped (keeping current)")
@@ -775,7 +773,7 @@ def setup_model_provider(config: dict, *, quick: bool = False):
             "minimax": "MiniMax",
             "minimax-cn": "MiniMax CN",
             "anthropic": "Anthropic",
-            "ai-gateway": "AI Gateway",
+            "ai-gateway": "Vercel AI Gateway",
             "custom": "your custom endpoint",
         }
         _prov_display = _prov_names.get(selected_provider, selected_provider or "your provider")
@@ -834,14 +832,7 @@ def setup_model_provider(config: dict, *, quick: bool = False):
             print_info("Skipped — add later with 'hermes setup' or configure AUXILIARY_VISION_* settings")
 
 
-    if selected_provider == "nous" and nous_subscription_selected:
-        changed_defaults = apply_nous_provider_defaults(config)
-        current_tts = str(config.get("tts", {}).get("provider") or "edge")
-        if "tts" in changed_defaults:
-            print_success("TTS provider set to: OpenAI TTS via your Nous subscription")
-        else:
-            print_info(f"Keeping your existing TTS provider: {current_tts}")
-
+    # Tool Gateway prompt is already shown by _model_flow_nous() above.
     save_config(config)
 
     if not quick and selected_provider != "nous":
@@ -919,6 +910,7 @@ def _setup_tts_provider(config: dict):
         "edge": "Edge TTS",
         "elevenlabs": "ElevenLabs",
         "openai": "OpenAI TTS",
+        "xai": "xAI TTS",
         "minimax": "MiniMax TTS",
         "mistral": "Mistral Voxtral TTS",
         "neutts": "NeuTTS",
@@ -940,12 +932,13 @@ def _setup_tts_provider(config: dict):
             "Edge TTS (free, cloud-based, no setup needed)",
             "ElevenLabs (premium quality, needs API key)",
             "OpenAI TTS (good quality, needs API key)",
+            "xAI TTS (Grok voices, needs API key)",
             "MiniMax TTS (high quality with voice cloning, needs API key)",
             "Mistral Voxtral TTS (multilingual, native Opus, needs API key)",
             "NeuTTS (local on-device, free, ~300MB model download)",
         ]
     )
-    providers.extend(["edge", "elevenlabs", "openai", "minimax", "mistral", "neutts"])
+    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "neutts"])
     choices.append(f"Keep current ({current_label})")
     keep_current_idx = len(choices) - 1
     idx = prompt_choice("Select TTS provider:", choices, keep_current_idx)
@@ -1009,6 +1002,23 @@ def _setup_tts_provider(config: dict):
                 print_success("OpenAI TTS API key saved")
             else:
                 print_warning("No API key provided. Falling back to Edge TTS.")
+                selected = "edge"
+
+    elif selected == "xai":
+        existing = get_env_value("XAI_API_KEY")
+        if not existing:
+            print()
+            api_key = prompt("xAI API key for TTS", password=True)
+            if api_key:
+                save_env_value("XAI_API_KEY", api_key)
+                print_success("xAI TTS API key saved")
+            else:
+                from hermes_constants import display_hermes_home as _dhh
+                print_warning(
+                    "No xAI API key provided for TTS. Configure XAI_API_KEY via "
+                    f"hermes setup model or {_dhh()}/.env to use xAI TTS. "
+                    "Falling back to Edge TTS."
+                )
                 selected = "edge"
 
     elif selected == "minimax":
@@ -1610,9 +1620,19 @@ def _setup_telegram():
             return
 
     print_info("Create a bot via @BotFather on Telegram")
-    token = prompt("Telegram bot token", password=True)
-    if not token:
-        return
+    import re
+
+    while True:
+        token = prompt("Telegram bot token", password=True)
+        if not token:
+            return
+        if not re.match(r"^\d+:[A-Za-z0-9_-]{30,}$", token):
+            print_error(
+                "Invalid token format. Expected: <numeric_id>:<alphanumeric_hash> "
+                "(e.g., 123456789:ABCdefGHI-jklMNOpqrSTUvwxYZ)"
+            )
+            continue
+        break
     save_env_value("TELEGRAM_BOT_TOKEN", token)
     print_success("Telegram token saved")
 
@@ -1968,6 +1988,54 @@ def _setup_wecom_callback():
     _gw_setup()
 
 
+def _setup_qqbot():
+    """Configure QQ Bot gateway."""
+    print_header("QQ Bot")
+    existing = get_env_value("QQ_APP_ID")
+    if existing:
+        print_info("QQ Bot: already configured")
+        if not prompt_yes_no("Reconfigure QQ Bot?", False):
+            return
+
+    print_info("Connects Hermes to QQ via the Official QQ Bot API (v2).")
+    print_info("   Requires a QQ Bot application at q.qq.com")
+    print_info("   Reference: https://bot.q.qq.com/wiki/develop/api-v2/")
+    print()
+
+    app_id = prompt("QQ Bot App ID")
+    if not app_id:
+        print_warning("App ID is required — skipping QQ Bot setup")
+        return
+    save_env_value("QQ_APP_ID", app_id.strip())
+
+    client_secret = prompt("QQ Bot App Secret", password=True)
+    if not client_secret:
+        print_warning("App Secret is required — skipping QQ Bot setup")
+        return
+    save_env_value("QQ_CLIENT_SECRET", client_secret)
+    print_success("QQ Bot credentials saved")
+
+    print()
+    print_info("🔒 Security: Restrict who can DM your bot")
+    print_info("   Use QQ user OpenIDs (found in event payloads)")
+    print()
+    allowed_users = prompt("Allowed user OpenIDs (comma-separated, leave empty for open access)")
+    if allowed_users:
+        save_env_value("QQ_ALLOWED_USERS", allowed_users.replace(" ", ""))
+        print_success("QQ Bot allowlist configured")
+    else:
+        print_info("⚠️  No allowlist set — anyone can DM the bot!")
+
+    print()
+    print_info("📬 Home Channel: OpenID for cron job delivery and notifications.")
+    home_channel = prompt("Home channel OpenID (leave empty to set later)")
+    if home_channel:
+        save_env_value("QQ_HOME_CHANNEL", home_channel)
+
+    print()
+    print_success("QQ Bot configured!")
+
+
 def _setup_bluebubbles():
     """Configure BlueBubbles iMessage gateway."""
     print_header("BlueBubbles (iMessage)")
@@ -2033,6 +2101,15 @@ def _setup_bluebubbles():
     print_info("   Install: https://docs.bluebubbles.app/helper-bundle/installation")
 
 
+def _setup_qqbot():
+    """Configure QQ Bot (Official API v2) via standard platform setup."""
+    from hermes_cli.gateway import _PLATFORMS
+    qq_platform = next((p for p in _PLATFORMS if p["key"] == "qqbot"), None)
+    if qq_platform:
+        from hermes_cli.gateway import _setup_standard_platform
+        _setup_standard_platform(qq_platform)
+
+
 def _setup_webhooks():
     """Configure webhook integration."""
     print_header("Webhooks")
@@ -2096,6 +2173,7 @@ _GATEWAY_PLATFORMS = [
     ("WeCom Callback (Self-Built App)", "WECOM_CALLBACK_CORP_ID", _setup_wecom_callback),
     ("Weixin (WeChat)", "WEIXIN_ACCOUNT_ID", _setup_weixin),
     ("BlueBubbles (iMessage)", "BLUEBUBBLES_SERVER_URL", _setup_bluebubbles),
+    ("QQ Bot", "QQ_APP_ID", _setup_qqbot),
     ("Webhooks (GitHub, GitLab, etc.)", "WEBHOOK_ENABLED", _setup_webhooks),
 ]
 
@@ -2147,6 +2225,7 @@ def setup_gateway(config: dict):
         or get_env_value("WECOM_BOT_ID")
         or get_env_value("WEIXIN_ACCOUNT_ID")
         or get_env_value("BLUEBUBBLES_SERVER_URL")
+        or get_env_value("QQ_APP_ID")
         or get_env_value("WEBHOOK_ENABLED")
     )
     if any_messaging:
@@ -2168,6 +2247,8 @@ def setup_gateway(config: dict):
             missing_home.append("Slack")
         if get_env_value("BLUEBUBBLES_SERVER_URL") and not get_env_value("BLUEBUBBLES_HOME_CHANNEL"):
             missing_home.append("BlueBubbles")
+        if get_env_value("QQ_APP_ID") and not get_env_value("QQ_HOME_CHANNEL"):
+            missing_home.append("QQBot")
 
         if missing_home:
             print()
